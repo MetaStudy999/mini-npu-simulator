@@ -18,6 +18,15 @@ STANDARD_LABELS = {
     "x": "X",
 }
 
+FAILURE_DATA_SCHEMA = "DATA_SCHEMA"
+FAILURE_LOGIC = "LOGIC"
+FAILURE_NUMERIC = "NUMERIC"
+FAILURE_TYPE_LABELS = {
+    FAILURE_DATA_SCHEMA: "데이터/스키마",
+    FAILURE_LOGIC: "로직",
+    FAILURE_NUMERIC: "수치 비교",
+}
+
 
 @dataclass
 class PatternMatrix:
@@ -41,9 +50,18 @@ class CaseResult:
     expected: Optional[str]
     predicted: str
     passed: bool
+    failure_type: Optional[str] = None
     reason: Optional[str] = None
     cross_score: Optional[float] = None
     x_score: Optional[float] = None
+
+
+@dataclass
+class SelfCheckResult:
+    name: str
+    passed: bool
+    failure_type: Optional[str] = None
+    detail: Optional[str] = None
 
 
 def print_header() -> None:
@@ -187,6 +205,31 @@ def format_score(score: float) -> str:
     return repr(float(score))
 
 
+def format_failure_type(failure_type: str) -> str:
+    return f"{failure_type} ({FAILURE_TYPE_LABELS.get(failure_type, failure_type)})"
+
+
+def failed_case(
+    case_id: str,
+    reason: str,
+    failure_type: str,
+    expected: Optional[str] = None,
+    predicted: str = "UNDECIDED",
+    cross_score: Optional[float] = None,
+    x_score: Optional[float] = None,
+) -> CaseResult:
+    return CaseResult(
+        case_id=case_id,
+        expected=expected,
+        predicted=predicted,
+        passed=False,
+        failure_type=failure_type,
+        reason=reason,
+        cross_score=cross_score,
+        x_score=x_score,
+    )
+
+
 def measure_mac_average_ms(
     pattern: PatternMatrix,
     filt: PatternMatrix,
@@ -257,7 +300,10 @@ def load_filters(filters_data: Any) -> Tuple[Dict[int, Dict[str, PatternMatrix]]
     messages: List[str] = []
 
     if not isinstance(filters_data, dict):
-        messages.append("filters 섹션이 객체가 아니어서 필터를 로드할 수 없습니다.")
+        messages.append(
+            f"x filters: {format_failure_type(FAILURE_DATA_SCHEMA)} | "
+            "filters 섹션이 객체가 아니어서 필터를 로드할 수 없습니다."
+        )
         return filters_by_size, messages
 
     def filter_sort_key(size_key: str) -> Tuple[int, str]:
@@ -269,13 +315,19 @@ def load_filters(filters_data: Any) -> Tuple[Dict[int, Dict[str, PatternMatrix]]
     for size_key in sorted(filters_data.keys(), key=filter_sort_key):
         match = re.fullmatch(r"size_(\d+)", size_key)
         if not match:
-            messages.append(f"x {size_key}: 필터 키 형식이 잘못되었습니다.")
+            messages.append(
+                f"x {size_key}: {format_failure_type(FAILURE_DATA_SCHEMA)} | "
+                "필터 키 형식이 잘못되었습니다."
+            )
             continue
 
         size = int(match.group(1))
         size_filters = filters_data[size_key]
         if not isinstance(size_filters, dict):
-            messages.append(f"x {size_key}: 필터 묶음이 객체가 아닙니다.")
+            messages.append(
+                f"x {size_key}: {format_failure_type(FAILURE_DATA_SCHEMA)} | "
+                "필터 묶음이 객체가 아닙니다."
+            )
             continue
 
         normalized_filters: Dict[str, PatternMatrix] = {}
@@ -285,6 +337,12 @@ def load_filters(filters_data: Any) -> Tuple[Dict[int, Dict[str, PatternMatrix]]
             normalized_label = normalize_label(filter_key)
             if normalized_label is None:
                 errors.append(f"지원하지 않는 필터 라벨 '{filter_key}'")
+                continue
+
+            if normalized_label in normalized_filters:
+                errors.append(
+                    f"정규화 후 중복 라벨 '{normalized_label}'이 발생했습니다."
+                )
                 continue
 
             matrix, error = matrix_from_data(
@@ -298,13 +356,18 @@ def load_filters(filters_data: Any) -> Tuple[Dict[int, Dict[str, PatternMatrix]]
 
             normalized_filters[normalized_label] = matrix  # type: ignore[assignment]
 
-        if {"Cross", "X"} <= set(normalized_filters.keys()):
+        if not errors and {"Cross", "X"} <= set(normalized_filters.keys()):
             filters_by_size[size] = normalized_filters
             messages.append(f"✓ {size_key} 필터 로드 완료 (Cross, X)")
         else:
             missing = [label for label in ("Cross", "X") if label not in normalized_filters]
-            detail = ", ".join(errors + [f"누락 라벨: {', '.join(missing)}"])
-            messages.append(f"x {size_key}: {detail}")
+            details = list(errors)
+            if missing:
+                details.append(f"누락 라벨: {', '.join(missing)}")
+            detail = ", ".join(details) if details else "원인 미상"
+            messages.append(
+                f"x {size_key}: {format_failure_type(FAILURE_DATA_SCHEMA)} | {detail}"
+            )
 
     return filters_by_size, messages
 
@@ -317,12 +380,10 @@ def analyze_patterns(
 
     if not isinstance(patterns_data, dict):
         return [
-            CaseResult(
+            failed_case(
                 case_id="patterns",
-                expected=None,
-                predicted="UNDECIDED",
-                passed=False,
                 reason="patterns 섹션이 객체가 아닙니다.",
+                failure_type=FAILURE_DATA_SCHEMA,
             )
         ]
 
@@ -337,36 +398,30 @@ def analyze_patterns(
         extracted_size = extract_size_from_pattern_key(case_id)
         if extracted_size is None:
             results.append(
-                CaseResult(
+                failed_case(
                     case_id=case_id,
-                    expected=None,
-                    predicted="UNDECIDED",
-                    passed=False,
                     reason="패턴 키 형식이 size_{N}_{idx} 규칙과 맞지 않습니다.",
+                    failure_type=FAILURE_DATA_SCHEMA,
                 )
             )
             continue
 
         if extracted_size not in filters_by_size:
             results.append(
-                CaseResult(
+                failed_case(
                     case_id=case_id,
-                    expected=None,
-                    predicted="UNDECIDED",
-                    passed=False,
                     reason=f"size_{extracted_size} 필터를 찾을 수 없습니다.",
+                    failure_type=FAILURE_DATA_SCHEMA,
                 )
             )
             continue
 
         if not isinstance(payload, dict):
             results.append(
-                CaseResult(
+                failed_case(
                     case_id=case_id,
-                    expected=None,
-                    predicted="UNDECIDED",
-                    passed=False,
                     reason="패턴 항목이 객체가 아닙니다.",
+                    failure_type=FAILURE_DATA_SCHEMA,
                 )
             )
             continue
@@ -378,12 +433,10 @@ def analyze_patterns(
         )
         if error:
             results.append(
-                CaseResult(
+                failed_case(
                     case_id=case_id,
-                    expected=None,
-                    predicted="UNDECIDED",
-                    passed=False,
                     reason=error,
+                    failure_type=FAILURE_DATA_SCHEMA,
                 )
             )
             continue
@@ -391,12 +444,10 @@ def analyze_patterns(
         expected = normalize_label(payload.get("expected"))
         if expected is None:
             results.append(
-                CaseResult(
+                failed_case(
                     case_id=case_id,
-                    expected=None,
-                    predicted="UNDECIDED",
-                    passed=False,
                     reason="expected 라벨 정규화에 실패했습니다.",
+                    failure_type=FAILURE_DATA_SCHEMA,
                 )
             )
             continue
@@ -409,12 +460,11 @@ def analyze_patterns(
             x_score = mac(pattern, x_filter)
         except ValueError as error_message:
             results.append(
-                CaseResult(
+                failed_case(
                     case_id=case_id,
                     expected=expected,
-                    predicted="UNDECIDED",
-                    passed=False,
                     reason=str(error_message),
+                    failure_type=FAILURE_LOGIC,
                 )
             )
             continue
@@ -422,12 +472,18 @@ def analyze_patterns(
         predicted = judge_scores(cross_score, x_score)
         passed = predicted == expected
 
+        failure_type: Optional[str] = None
         reason: Optional[str] = None
         if not passed:
             if predicted == "UNDECIDED":
+                failure_type = FAILURE_NUMERIC
                 reason = "동점(UNDECIDED) 처리 규칙에 따라 FAIL"
             else:
-                reason = "expected와 판정 결과가 다릅니다."
+                failure_type = FAILURE_DATA_SCHEMA
+                reason = (
+                    "expected와 판정 결과가 다릅니다. "
+                    "핵심 로직 자체 검증이 통과했다면 데이터 라벨/내용을 먼저 확인하세요."
+                )
 
         results.append(
             CaseResult(
@@ -435,6 +491,7 @@ def analyze_patterns(
                 expected=expected,
                 predicted=predicted,
                 passed=passed,
+                failure_type=failure_type,
                 reason=reason,
                 cross_score=cross_score,
                 x_score=x_score,
@@ -442,6 +499,150 @@ def analyze_patterns(
         )
 
     return results
+
+
+def run_core_self_checks() -> List[SelfCheckResult]:
+    results: List[SelfCheckResult] = []
+
+    normalized_ok = (
+        normalize_label("+") == "Cross"
+        and normalize_label(" cross ") == "Cross"
+        and normalize_label("X") == "X"
+    )
+    results.append(
+        SelfCheckResult(
+            name="라벨 정규화 규칙",
+            passed=normalized_ok,
+            failure_type=None if normalized_ok else FAILURE_LOGIC,
+            detail=(
+                None
+                if normalized_ok
+                else "예상한 +/cross/x -> Cross/X 정규화가 동작하지 않습니다."
+            ),
+        )
+    )
+
+    size_rule_ok = (
+        extract_size_from_pattern_key("size_13_2") == 13
+        and extract_size_from_pattern_key("size_bad") is None
+    )
+    results.append(
+        SelfCheckResult(
+            name="패턴 키 크기 추출 규칙",
+            passed=size_rule_ok,
+            failure_type=None if size_rule_ok else FAILURE_LOGIC,
+            detail=(
+                None
+                if size_rule_ok
+                else "size_{N}_{idx} 규칙 해석 또는 예외 처리가 기대와 다릅니다."
+            ),
+        )
+    )
+
+    cross_win_ok = True
+    cross_win_detail: Optional[str] = None
+    for size in PERFORMANCE_SIZES:
+        cross_pattern = generate_cross_matrix(size)
+        cross_filter = generate_cross_matrix(size)
+        x_filter = generate_x_matrix(size)
+        cross_score = mac(cross_pattern, cross_filter)
+        x_score = mac(cross_pattern, x_filter)
+        if not (cross_score > x_score and judge_scores(cross_score, x_score) == "Cross"):
+            cross_win_ok = False
+            cross_win_detail = (
+                f"{size}x{size}에서 Cross 패턴이 Cross 필터보다 높게 판정되지 않았습니다. "
+                f"(Cross={format_score(cross_score)}, X={format_score(x_score)})"
+            )
+            break
+    results.append(
+        SelfCheckResult(
+            name="Cross 우세 판정",
+            passed=cross_win_ok,
+            failure_type=None if cross_win_ok else FAILURE_LOGIC,
+            detail=cross_win_detail,
+        )
+    )
+
+    x_win_ok = True
+    x_win_detail: Optional[str] = None
+    for size in PERFORMANCE_SIZES:
+        x_pattern = generate_x_matrix(size)
+        cross_filter = generate_cross_matrix(size)
+        x_filter = generate_x_matrix(size)
+        cross_score = mac(x_pattern, cross_filter)
+        x_score = mac(x_pattern, x_filter)
+        if not (x_score > cross_score and judge_scores(cross_score, x_score) == "X"):
+            x_win_ok = False
+            x_win_detail = (
+                f"{size}x{size}에서 X 패턴이 X 필터보다 높게 판정되지 않았습니다. "
+                f"(Cross={format_score(cross_score)}, X={format_score(x_score)})"
+            )
+            break
+    results.append(
+        SelfCheckResult(
+            name="X 우세 판정",
+            passed=x_win_ok,
+            failure_type=None if x_win_ok else FAILURE_LOGIC,
+            detail=x_win_detail,
+        )
+    )
+
+    epsilon_ok = (
+        judge_scores(1.0, 1.0 + (EPSILON / 2.0)) == "UNDECIDED"
+        and judge_scores(1.0, 1.0 + (EPSILON * 2.0)) == "X"
+    )
+    results.append(
+        SelfCheckResult(
+            name="epsilon 기반 동점 정책",
+            passed=epsilon_ok,
+            failure_type=None if epsilon_ok else FAILURE_NUMERIC,
+            detail=(
+                None
+                if epsilon_ok
+                else "점수 차이가 epsilon 안팎일 때 UNDECIDED/X 판정이 기대와 다릅니다."
+            ),
+        )
+    )
+
+    size_mismatch_guard_ok = False
+    try:
+        mac(generate_cross_matrix(3), generate_cross_matrix(5))
+    except ValueError:
+        size_mismatch_guard_ok = True
+    results.append(
+        SelfCheckResult(
+            name="크기 불일치 방어 로직",
+            passed=size_mismatch_guard_ok,
+            failure_type=None if size_mismatch_guard_ok else FAILURE_LOGIC,
+            detail=(
+                None
+                if size_mismatch_guard_ok
+                else "서로 다른 크기의 pattern/filter 조합에서 예외가 발생하지 않았습니다."
+            ),
+        )
+    )
+
+    return results
+
+
+def print_self_check_results(results: List[SelfCheckResult]) -> None:
+    for result in results:
+        status = "PASS" if result.passed else "FAIL"
+        marker = "✓" if result.passed else "x"
+        line = f"{marker} {result.name}: {status}"
+        if not result.passed and result.failure_type:
+            line += f" | {format_failure_type(result.failure_type)}"
+        print(line)
+        if result.detail and not result.passed:
+            print(f"사유: {result.detail}")
+
+
+def count_failures_by_type(results: List[CaseResult]) -> Dict[str, int]:
+    counts = {failure_type: 0 for failure_type in FAILURE_TYPE_LABELS}
+    for result in results:
+        if not result.passed and result.failure_type in counts:
+            counts[result.failure_type] += 1
+    return counts
 
 
 def print_case_result(result: CaseResult) -> None:
@@ -454,6 +655,8 @@ def print_case_result(result: CaseResult) -> None:
     expected = result.expected or "N/A"
     status = "PASS" if result.passed else "FAIL"
     print(f"판정: {result.predicted} | expected: {expected} | {status}")
+    if result.failure_type:
+        print(f"분류: {format_failure_type(result.failure_type)}")
     if result.reason:
         print(f"사유: {result.reason}")
     print()
@@ -500,6 +703,15 @@ def run_user_input_mode() -> None:
 
 
 def run_json_analysis_mode() -> None:
+    print_section("[0] 핵심 로직 자체 검증")
+    self_check_results = run_core_self_checks()
+    print_self_check_results(self_check_results)
+    if any(not result.passed for result in self_check_results):
+        print()
+        print("핵심 로직 자체 검증 실패로 data.json 분석을 중단합니다.")
+        return
+    print()
+
     print_section("[1] 필터 로드")
     data, error = load_json_data(DATA_FILE)
     if error:
@@ -528,9 +740,21 @@ def run_json_analysis_mode() -> None:
     print(f"실패: {failed}개")
     if failed_cases:
         print()
+        print("실패 분류 요약:")
+        failure_counts = count_failures_by_type(results)
+        for failure_type, count in failure_counts.items():
+            if count:
+                print(f"- {FAILURE_TYPE_LABELS[failure_type]}: {count}개")
+        print()
         print("실패 케이스:")
         for case in failed_cases:
-            print(f"- {case.case_id}: {case.reason or '원인 미상'}")
+            if case.failure_type:
+                print(
+                    f"- {case.case_id} | {format_failure_type(case.failure_type)}: "
+                    f"{case.reason or '원인 미상'}"
+                )
+            else:
+                print(f"- {case.case_id}: {case.reason or '원인 미상'}")
 
 
 def prompt_mode() -> str:
