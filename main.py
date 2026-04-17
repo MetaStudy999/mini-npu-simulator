@@ -70,8 +70,10 @@ def print_header() -> None:
 
 
 def print_section(title: str) -> None:
+    separator = "#----------------------------------------"
+    print(separator)
     print(f"# {title}")
-    print("-" * 50)
+    print(separator)
 
 
 def normalize_label(raw_label: Any) -> Optional[str]:
@@ -637,14 +639,6 @@ def print_self_check_results(results: List[SelfCheckResult]) -> None:
             print(f"사유: {result.detail}")
 
 
-def count_failures_by_type(results: List[CaseResult]) -> Dict[str, int]:
-    counts = {failure_type: 0 for failure_type in FAILURE_TYPE_LABELS}
-    for result in results:
-        if not result.passed and result.failure_type in counts:
-            counts[result.failure_type] += 1
-    return counts
-
-
 def print_case_result(result: CaseResult) -> None:
     print(f"--- {result.case_id} ---")
     if result.cross_score is not None:
@@ -654,10 +648,17 @@ def print_case_result(result: CaseResult) -> None:
 
     expected = result.expected or "N/A"
     status = "PASS" if result.passed else "FAIL"
-    print(f"판정: {result.predicted} | expected: {expected} | {status}")
-    if result.failure_type:
-        print(f"분류: {format_failure_type(result.failure_type)}")
-    if result.reason:
+    line = f"판정: {result.predicted} | expected: {expected} | {status}"
+    if (
+        not result.passed
+        and result.failure_type == FAILURE_NUMERIC
+        and result.predicted == "UNDECIDED"
+    ):
+        line += " (동점 규칙)"
+    print(line)
+    if result.reason and not (
+        result.failure_type == FAILURE_NUMERIC and result.predicted == "UNDECIDED"
+    ):
         print(f"사유: {result.reason}")
     print()
 
@@ -694,7 +695,7 @@ def run_user_input_mode() -> None:
 
     print(f"A 점수: {format_score(score_a)}")
     print(f"B 점수: {format_score(score_b)}")
-    print(f"연산 시간(평균/{PERFORMANCE_REPEATS}회, 2회 MAC): {average_classification_ms:.6f} ms")
+    print(f"연산 시간(평균/{PERFORMANCE_REPEATS}회): {average_classification_ms:.6f} ms")
     print(f"판정: {judge_ab_scores(score_a, score_b)}")
     print()
 
@@ -731,21 +732,9 @@ def run_json_analysis_mode() -> None:
     print(f"실패: {failed}개")
     if failed_cases:
         print()
-        print("실패 분류 요약:")
-        failure_counts = count_failures_by_type(results)
-        for failure_type, count in failure_counts.items():
-            if count:
-                print(f"- {FAILURE_TYPE_LABELS[failure_type]}: {count}개")
-        print()
         print("실패 케이스:")
         for case in failed_cases:
-            if case.failure_type:
-                print(
-                    f"- {case.case_id} | {format_failure_type(case.failure_type)}: "
-                    f"{case.reason or '원인 미상'}"
-                )
-            else:
-                print(f"- {case.case_id}: {case.reason or '원인 미상'}")
+            print(f"- {case.case_id}: {case.reason or '원인 미상'}")
 
 
 def prompt_mode() -> str:
