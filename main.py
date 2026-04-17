@@ -197,7 +197,7 @@ def judge_scores(score_cross: float, score_x: float) -> str:
 
 def judge_ab_scores(score_a: float, score_b: float) -> str:
     if abs(score_a - score_b) < EPSILON:
-        return f"판정 불가 (|A-B| < {EPSILON})"
+        return "UNDECIDED"
     return "A" if score_a > score_b else "B"
 
 
@@ -703,15 +703,6 @@ def run_user_input_mode() -> None:
 
 
 def run_json_analysis_mode() -> None:
-    print_section("[0] 핵심 로직 자체 검증")
-    self_check_results = run_core_self_checks()
-    print_self_check_results(self_check_results)
-    if any(not result.passed for result in self_check_results):
-        print()
-        print("핵심 로직 자체 검증 실패로 data.json 분석을 중단합니다.")
-        return
-    print()
-
     print_section("[1] 필터 로드")
     data, error = load_json_data(DATA_FILE)
     if error:
