@@ -112,16 +112,67 @@ python3 main.py
 
 ## data.json 분석 모드
 
-`data.json`은 아래 규칙을 따릅니다.
+`data.json`은 쉽게 말하면 아래 두 덩어리로 나뉩니다.
 
-- `filters.size_5`, `filters.size_13`, `filters.size_25`
-- 각 `size_N`은 `N x N` 크기 전용 필터 묶음이라는 뜻입니다.
-- 각 필터 묶음 내부 키는 `cross`, `x`이며, 프로그램 내부에서는 각각 `Cross`, `X`로 표준화합니다.
-- 패턴 키는 `size_{N}_{idx}` 형식입니다.
-- 여기서 `N`은 입력 패턴의 한 변 크기, `idx`는 같은 크기 안에서의 케이스 번호입니다.
-- 예를 들어 `size_13_3`은 `13 x 13` 세 번째 패턴이므로 `filters.size_13`과 비교해야 합니다.
-- 각 패턴은 `input`, `expected`를 포함합니다.
-- `expected`는 데이터셋에서 `+`, `x`처럼 들어오지만, 프로그램은 이를 `Cross`, `X`로 정규화한 뒤 비교합니다.
+- `filters`: 정답과 비교할 기준 모양
+- `patterns`: 실제로 판별해 볼 입력 모양
+
+즉, `filters`는 `정답지`에 가깝고, `patterns`는 `문제지`에 가깝습니다.  
+프로그램은 각 패턴을 꺼내서 같은 크기의 필터와 비교한 뒤, `Cross`에 더 가까운지 `X`에 더 가까운지 판단합니다.
+
+가장 단순하게 보면 구조는 아래와 같습니다.
+
+```json
+{
+  "filters": {
+    "size_5": {
+      "cross": [[...], [...], [...], [...], [...]],
+      "x": [[...], [...], [...], [...], [...]]
+    },
+    "size_13": {
+      "cross": [[...]],
+      "x": [[...]]
+    }
+  },
+  "patterns": {
+    "size_5_1": {
+      "input": [[...], [...], [...], [...], [...]],
+      "expected": "x"
+    },
+    "size_13_3": {
+      "input": [[...]],
+      "expected": "+"
+    }
+  }
+}
+```
+
+이 구조를 읽는 방법은 다음처럼 생각하면 쉽습니다.
+
+- `filters.size_5`: `5 x 5` 패턴을 판별할 때 사용할 기준 필터 묶음
+- `filters.size_13`: `13 x 13` 패턴을 판별할 때 사용할 기준 필터 묶음
+- `cross`, `x`: 각각 십자가 모양 필터, X 모양 필터
+- `patterns.size_5_1`: 첫 번째 `5 x 5` 테스트 패턴
+- `patterns.size_13_3`: 세 번째 `13 x 13` 테스트 패턴
+- `input`: 실제 비교할 숫자 행렬
+- `expected`: 사람이 미리 붙여 둔 정답 라벨
+
+예를 들어 `size_13_3`이라는 이름을 보면 아래 뜻입니다.
+
+- `13`: 한 변의 길이가 13인 패턴
+- `3`: 같은 크기 안에서 세 번째 테스트 케이스
+
+그래서 `patterns.size_13_3`은 반드시 `filters.size_13` 안의 `cross`, `x` 필터와 비교해야 합니다.  
+크기가 다르면 올바른 비교가 아니기 때문입니다.
+
+라벨도 조금 쉽게 보면 아래처럼 이해하면 됩니다.
+
+- `cross`: 십자가 필터
+- `x`: X 필터
+- `expected: "+"`: 정답은 십자가
+- `expected: "x"`: 정답은 X
+
+프로그램 내부에서는 이런 다양한 표기를 최종적으로 `Cross`, `X` 두 가지 표준 라벨로 맞춘 뒤 비교합니다.
 
 프로그램은 다음 순서로 동작합니다.
 
@@ -145,6 +196,146 @@ python3 main.py
 - 필터 키를 정규화한 뒤 중복 라벨이 생기면 스키마 오류로 처리합니다.
 - 성능 분석은 I/O를 제외하고 MAC 함수 호출만 10회 반복 측정해 평균 ms를 계산합니다.
 - 보너스 성격으로 `Cross`, `X` 패턴 생성 함수를 추가해 성능 분석용 입력을 자동 생성합니다.
+
+## main.py 구조 설명
+
+`main.py`는 기능이 많은 것처럼 보이지만, 크게 보면 아래 4단계로 이해할 수 있습니다.
+
+1. 입력을 받거나 `data.json`을 읽습니다.
+2. 데이터를 `PatternMatrix` 형태로 정리하고 검증합니다.
+3. `mac()`으로 점수를 계산하고 `judge_scores()`로 판정합니다.
+4. 결과와 성능 표를 화면에 출력합니다.
+
+즉, 이 파일은 `입력 -> 검증 -> 계산 -> 출력` 흐름으로 읽으면 가장 쉽습니다.
+
+### 1. 실행은 어디서 시작되나요?
+
+프로그램 시작점은 맨 아래의 `main()`입니다.
+
+```python
+if __name__ == "__main__":
+    main()
+```
+
+`main()`은 아래 순서로만 움직입니다.
+
+1. `print_header()`로 제목을 출력합니다.
+2. `prompt_mode()`로 실행 모드를 고릅니다.
+3. `1`이면 `run_user_input_mode()`를 실행합니다.
+4. `2`이면 `run_json_analysis_mode()`를 실행합니다.
+
+즉, `main()`은 전체 흐름을 고르는 `입구` 역할을 합니다.
+
+### 2. 코드가 어떻게 나뉘어 있나요?
+
+`main.py` 안의 함수들은 역할별로 보면 아래처럼 묶입니다.
+
+- 상수/설정값: `EPSILON`, `PERFORMANCE_REPEATS`, `PERFORMANCE_SIZES`, `DATA_FILE`
+- 데이터 구조: `PatternMatrix`, `CaseResult`, `SelfCheckResult`
+- 입력 검증: `parse_row_input()`, `prompt_matrix()`, `matrix_from_data()`
+- 패턴 계산: `generate_cross_matrix()`, `generate_x_matrix()`, `mac()`
+- 판정 규칙: `normalize_label()`, `extract_size_from_pattern_key()`, `judge_scores()`, `judge_ab_scores()`
+- 성능 측정: `measure_mac_average_ms()`, `measure_classification_average_ms()`, `performance_rows()`
+- JSON 분석: `load_json_data()`, `load_filters()`, `analyze_patterns()`
+- 출력 정리: `print_case_result()`, `print_performance_table()`, `summarize_results()`
+- 실행 모드: `run_user_input_mode()`, `run_json_analysis_mode()`, `prompt_mode()`, `main()`
+
+이렇게 보면 `main.py`는 한 함수가 모든 일을 하는 구조가 아니라, 작은 역할을 맡은 함수들을 조합해서 동작하는 구조입니다.
+
+### 3. 가장 중요한 핵심 함수는 무엇인가요?
+
+처음 읽을 때는 아래 함수들만 먼저 이해해도 전체 구조가 거의 보입니다.
+
+- `matrix_from_data()`: 외부에서 들어온 2차원 배열이 정말 올바른 행렬인지 검사합니다.
+- `mac()`: 같은 위치의 값을 곱하고 모두 더해서 유사도 점수를 계산합니다.
+- `judge_scores()`: Cross 점수와 X 점수를 비교해 최종 판정을 내립니다.
+- `load_filters()`: `data.json`의 필터를 크기별로 정리합니다.
+- `analyze_patterns()`: 각 패턴을 읽고 실제 PASS/FAIL 결과를 만듭니다.
+
+쉽게 말해:
+
+- `matrix_from_data()`는 `입력이 믿을 만한지 확인`
+- `mac()`는 `실제 계산`
+- `judge_scores()`는 `누가 더 높은지 결정`
+- `analyze_patterns()`는 `이 모든 과정을 케이스별로 반복`
+
+이 네 가지가 프로그램의 중심입니다.
+
+### 4. 모드 1은 어떻게 동작하나요?
+
+`run_user_input_mode()`는 사용자가 직접 3x3 데이터를 넣어 보는 실습 모드입니다.
+
+동작 순서는 아래와 같습니다.
+
+1. `prompt_matrix()`로 필터 A를 입력받습니다.
+2. `prompt_matrix()`로 필터 B를 입력받습니다.
+3. `prompt_matrix()`로 패턴을 입력받습니다.
+4. `mac()`으로 A 점수와 B 점수를 계산합니다.
+5. `measure_classification_average_ms()`로 평균 실행 시간을 계산합니다.
+6. `judge_ab_scores()`로 A와 B 중 어느 쪽이 더 높은지 보여 줍니다.
+
+여기서는 이름만 `A`, `B`일 뿐이고, 구조적으로는 `두 필터를 비교해서 더 높은 점수를 고르는 연습`이라고 생각하면 됩니다.
+
+### 5. 모드 2는 어떻게 동작하나요?
+
+`run_json_analysis_mode()`는 `data.json` 안의 여러 테스트 케이스를 한 번에 돌리는 모드입니다.
+
+흐름은 아래와 같습니다.
+
+1. `load_json_data()`로 파일을 읽습니다.
+2. `load_filters()`로 `filters`를 정리합니다.
+3. `analyze_patterns()`로 `patterns`를 하나씩 분석합니다.
+4. `print_case_result()`로 케이스별 결과를 출력합니다.
+5. `performance_rows()`와 `print_performance_table()`로 성능 표를 출력합니다.
+6. `summarize_results()`로 총 통과/실패 개수를 집계합니다.
+
+즉, 모드 2는 `자동 채점 모드`에 가깝습니다.  
+사용자 입력 대신 준비된 데이터셋을 읽어서, 각 케이스가 맞는지 한꺼번에 검사합니다.
+
+### 6. 왜 데이터 클래스를 따로 쓰나요?
+
+이 파일에는 `@dataclass`가 붙은 클래스가 3개 있습니다.
+
+- `PatternMatrix`: 실제 행렬 데이터 저장
+- `CaseResult`: 케이스 하나의 판정 결과 저장
+- `SelfCheckResult`: 내부 점검 결과 저장
+
+이렇게 나누면 장점이 있습니다.
+
+- 행렬은 `PatternMatrix`로 통일해서 다룰 수 있습니다.
+- 분석 결과는 `CaseResult`에 묶어서 전달할 수 있습니다.
+- 여러 값을 따로따로 넘기지 않아도 되어 코드가 읽기 쉬워집니다.
+
+특히 `CaseResult` 덕분에 `expected`, `predicted`, `passed`, `reason` 같은 정보를 한 번에 모아 출력할 수 있습니다.
+
+### 7. `run_core_self_checks()`는 무엇인가요?
+
+이 함수는 핵심 로직이 기본 기대대로 동작하는지 빠르게 점검하는 보조 함수입니다.
+
+예를 들어 아래 같은 것을 검사합니다.
+
+- `+`, `cross`, `x` 라벨 정규화가 올바른지
+- 패턴 키에서 크기를 잘 읽는지
+- Cross 패턴이 정말 Cross 필터에서 더 높은 점수를 얻는지
+- epsilon 비교 규칙이 의도대로 동작하는지
+- 크기가 다른 행렬끼리 비교할 때 예외가 나는지
+
+현재 기본 실행 흐름에서는 `main()`이 이 함수를 직접 호출하지는 않습니다.  
+하지만 코드 유지보수나 추가 테스트를 할 때 유용한 내부 점검 도구라고 볼 수 있습니다.
+
+### 8. 처음 읽는 사람에게 추천하는 읽기 순서
+
+처음부터 위에서 아래로 전부 읽어도 되지만, 아래 순서가 더 이해하기 쉽습니다.
+
+1. `main()`
+2. `prompt_mode()`
+3. `run_user_input_mode()`와 `run_json_analysis_mode()`
+4. `mac()`와 `judge_scores()`
+5. `matrix_from_data()`
+6. `load_json_data()`, `load_filters()`, `analyze_patterns()`
+7. 마지막으로 `PatternMatrix`, `CaseResult` 같은 데이터 구조
+
+이 순서로 보면 먼저 `프로그램이 뭘 하는지`를 잡고, 그다음 `세부 구현이 왜 필요한지`를 이해할 수 있습니다.
 
 ## 핵심 개념 해설
 

@@ -1,3 +1,9 @@
+"""Mini NPU Simulator의 핵심 로직을 모아 둔 메인 실행 파일.
+
+이 프로그램은 두 종류의 패턴(Cross, X)을 숫자 행렬로 표현한 뒤,
+MAC(Multiply-Accumulate) 점수를 계산해서 어떤 패턴에 더 가까운지 판별한다.
+"""
+
 from __future__ import annotations
 
 import json
@@ -7,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+# 전역 설정값과 고정 상수들.
 EPSILON = 1e-9
 PERFORMANCE_REPEATS = 10
 PERFORMANCE_SIZES = [3, 5, 13, 25]
@@ -28,6 +35,7 @@ FAILURE_TYPE_LABELS = {
 }
 
 
+# 2차원 패턴/필터를 하나의 객체처럼 다루기 위한 간단한 자료구조.
 @dataclass
 class PatternMatrix:
     size: int
@@ -44,6 +52,7 @@ class PatternMatrix:
         return self.size * self.size
 
 
+# 케이스 하나를 분석한 최종 결과를 담는다.
 @dataclass
 class CaseResult:
     case_id: str
@@ -56,6 +65,7 @@ class CaseResult:
     x_score: Optional[float] = None
 
 
+# 핵심 로직이 정상인지 자체 점검한 결과를 담는다.
 @dataclass
 class SelfCheckResult:
     name: str
@@ -64,6 +74,7 @@ class SelfCheckResult:
     detail: Optional[str] = None
 
 
+# 화면 출력 보조 함수들.
 def print_header() -> None:
     print("=== Mini NPU Simulator ===")
     print()
@@ -77,18 +88,23 @@ def print_section(title: str) -> None:
 
 
 def normalize_label(raw_label: Any) -> Optional[str]:
+    # JSON 안의 '+', 'cross', 'x' 같은 다양한 표기를
+    # 내부 표준 라벨('Cross', 'X')로 통일한다.
     if not isinstance(raw_label, str):
         return None
     return STANDARD_LABELS.get(raw_label.strip().lower())
 
 
 def extract_size_from_pattern_key(case_id: str) -> Optional[int]:
+    # 패턴 키는 size_{N}_{idx} 형식을 기대한다.
+    # 예: size_13_2 -> 13
     match = re.fullmatch(r"size_(\d+)_(\d+)", case_id)
     if not match:
         return None
     return int(match.group(1))
 
 
+# 외부 입력(list 형태)을 검증하고 PatternMatrix로 변환한다.
 def matrix_from_data(
     raw_matrix: Any,
     expected_size: Optional[int] = None,
@@ -106,6 +122,8 @@ def matrix_from_data(
         if not isinstance(row, list):
             return None, f"{context}: {row_index}행이 배열이 아닙니다."
 
+        # expected_size가 있으면 그 크기를 강제하고,
+        # 없으면 첫 차원 길이를 기준으로 정사각형 행렬인지 확인한다.
         required_width = expected_size if expected_size is not None else size
         if len(row) != required_width:
             return None, (
@@ -123,6 +141,7 @@ def matrix_from_data(
     return PatternMatrix(expected_size or size, rows), None
 
 
+# 사용자 콘솔 입력 한 줄을 숫자 배열로 바꾼다.
 def parse_row_input(line: str, size: int) -> Tuple[Optional[List[float]], Optional[str]]:
     parts = line.strip().split()
     if len(parts) != size:
@@ -138,6 +157,7 @@ def parse_row_input(line: str, size: int) -> Tuple[Optional[List[float]], Option
         )
 
 
+# 사용자가 올바른 크기의 행을 모두 입력할 때까지 반복해서 받는다.
 def prompt_matrix(title: str, size: int) -> PatternMatrix:
     print(f"{title} ({size}줄 입력, 공백 구분)")
     rows: List[List[float]] = []
@@ -154,28 +174,34 @@ def prompt_matrix(title: str, size: int) -> PatternMatrix:
     return matrix  # type: ignore[return-value]
 
 
+# 테스트용 Cross 패턴을 자동 생성한다.
 def generate_cross_matrix(size: int) -> PatternMatrix:
     center = size // 2
     rows: List[List[float]] = []
     for row in range(size):
         current_row: List[float] = []
         for col in range(size):
+            # 가운데 행 또는 가운데 열이면 1, 아니면 0.
             current_row.append(1.0 if row == center or col == center else 0.0)
         rows.append(current_row)
     return PatternMatrix(size, rows)
 
 
+# 테스트용 X 패턴을 자동 생성한다.
 def generate_x_matrix(size: int) -> PatternMatrix:
     last_index = size - 1
     rows: List[List[float]] = []
     for row in range(size):
         current_row: List[float] = []
         for col in range(size):
+            # 주대각선 또는 부대각선 위에 있으면 1, 아니면 0.
             current_row.append(1.0 if row == col or row + col == last_index else 0.0)
         rows.append(current_row)
     return PatternMatrix(size, rows)
 
 
+# MAC(Multiply-Accumulate) 연산의 핵심 구현.
+# 같은 위치의 값을 곱한 뒤 모두 더해서 유사도 점수를 만든다.
 def mac(pattern: PatternMatrix, filt: PatternMatrix) -> float:
     if pattern.size != filt.size:
         raise ValueError(
@@ -192,6 +218,8 @@ def mac(pattern: PatternMatrix, filt: PatternMatrix) -> float:
 
 
 def judge_scores(score_cross: float, score_x: float) -> str:
+    # 실수 계산은 아주 미세한 오차가 생길 수 있어서,
+    # 완전 일치 대신 EPSILON 범위 안이면 동점으로 본다.
     if abs(score_cross - score_x) < EPSILON:
         return "UNDECIDED"
     return "Cross" if score_cross > score_x else "X"
@@ -232,11 +260,14 @@ def failed_case(
     )
 
 
+# MAC 함수 자체의 평균 실행 시간을 구한다.
 def measure_mac_average_ms(
     pattern: PatternMatrix,
     filt: PatternMatrix,
     repeats: int = PERFORMANCE_REPEATS,
 ) -> float:
+    # 첫 호출은 워밍업 성격으로 한 번 수행해서
+    # 아주 짧은 측정에서 초기 호출 편차를 줄인다.
     mac(pattern, filt)
     start = time.perf_counter()
     for _ in range(repeats):
@@ -245,12 +276,14 @@ def measure_mac_average_ms(
     return (elapsed / repeats) * 1000.0
 
 
+# 두 필터를 모두 비교하는 "분류 1회"의 평균 시간을 구한다.
 def measure_classification_average_ms(
     pattern: PatternMatrix,
     filter_a: PatternMatrix,
     filter_b: PatternMatrix,
     repeats: int = PERFORMANCE_REPEATS,
 ) -> float:
+    # 실제 분류와 같은 흐름으로 A/B 필터를 모두 계산한다.
     mac(pattern, filter_a)
     mac(pattern, filter_b)
     start = time.perf_counter()
@@ -261,6 +294,7 @@ def measure_classification_average_ms(
     return (elapsed / repeats) * 1000.0
 
 
+# 보고서에 쓸 크기별 성능 행을 만든다.
 def performance_rows() -> List[Tuple[int, float, int]]:
     rows: List[Tuple[int, float, int]] = []
     for size in PERFORMANCE_SIZES:
@@ -271,6 +305,7 @@ def performance_rows() -> List[Tuple[int, float, int]]:
     return rows
 
 
+# 표 형태의 콘솔 출력 함수.
 def print_performance_table(rows: List[Tuple[int, float, int]]) -> None:
     print("크기      평균 시간(ms)      연산 횟수(N^2)")
     print("-" * 42)
@@ -279,6 +314,7 @@ def print_performance_table(rows: List[Tuple[int, float, int]]) -> None:
         print(f"{label:<8}{average_ms:>14.6f}{operations:>18}")
 
 
+# data.json 전체를 읽고 최상위 스키마를 확인한다.
 def load_json_data(path: Path) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     try:
         with path.open("r", encoding="utf-8") as file:
@@ -297,6 +333,7 @@ def load_json_data(path: Path) -> Tuple[Optional[Dict[str, Any]], Optional[str]]
     return data, None
 
 
+# filters 섹션을 읽어 size별 Cross/X 필터 묶음으로 정리한다.
 def load_filters(filters_data: Any) -> Tuple[Dict[int, Dict[str, PatternMatrix]], List[str]]:
     filters_by_size: Dict[int, Dict[str, PatternMatrix]] = {}
     messages: List[str] = []
@@ -309,6 +346,8 @@ def load_filters(filters_data: Any) -> Tuple[Dict[int, Dict[str, PatternMatrix]]
         return filters_by_size, messages
 
     def filter_sort_key(size_key: str) -> Tuple[int, str]:
+        # size_5, size_13처럼 정상 키는 숫자순으로 정렬하고,
+        # 형식이 잘못된 키는 뒤로 보내서 오류 메시지로 처리한다.
         match = re.fullmatch(r"size_(\d+)", size_key)
         if not match:
             return (10**9, size_key)
@@ -336,11 +375,14 @@ def load_filters(filters_data: Any) -> Tuple[Dict[int, Dict[str, PatternMatrix]]
         errors: List[str] = []
 
         for filter_key, raw_matrix in size_filters.items():
+            # cross/x처럼 들어온 키를 내부 표준 라벨로 정규화한다.
             normalized_label = normalize_label(filter_key)
             if normalized_label is None:
                 errors.append(f"지원하지 않는 필터 라벨 '{filter_key}'")
                 continue
 
+            # 예: '+'와 'cross'가 동시에 들어오면 둘 다 Cross로 바뀌므로
+            # 정규화 이후 중복이 생기는지 따로 확인해야 한다.
             if normalized_label in normalized_filters:
                 errors.append(
                     f"정규화 후 중복 라벨 '{normalized_label}'이 발생했습니다."
@@ -374,6 +416,7 @@ def load_filters(filters_data: Any) -> Tuple[Dict[int, Dict[str, PatternMatrix]]
     return filters_by_size, messages
 
 
+# patterns 섹션을 순회하면서 실제 판별 결과를 만든다.
 def analyze_patterns(
     patterns_data: Any,
     filters_by_size: Dict[int, Dict[str, PatternMatrix]],
@@ -390,6 +433,7 @@ def analyze_patterns(
         ]
 
     def sort_key(case_id: str) -> Tuple[int, int]:
+        # 출력 순서를 size -> index 기준으로 안정적으로 맞춘다.
         match = re.fullmatch(r"size_(\d+)_(\d+)", case_id)
         if not match:
             return (10**9, 10**9)
@@ -408,6 +452,7 @@ def analyze_patterns(
             )
             continue
 
+        # 패턴 키에 적힌 크기를 기준으로 같은 size의 필터 묶음을 고른다.
         if extracted_size not in filters_by_size:
             results.append(
                 failed_case(
@@ -443,6 +488,7 @@ def analyze_patterns(
             )
             continue
 
+        # expected도 필터 키와 같은 표준 라벨 체계로 맞춘 뒤 비교한다.
         expected = normalize_label(payload.get("expected"))
         if expected is None:
             results.append(
@@ -477,6 +523,8 @@ def analyze_patterns(
         failure_type: Optional[str] = None
         reason: Optional[str] = None
         if not passed:
+            # 동점은 수치 비교 정책(epsilon)의 결과이므로 NUMERIC으로,
+            # 그 외 불일치는 데이터 라벨 또는 패턴 내용 문제로 본다.
             if predicted == "UNDECIDED":
                 failure_type = FAILURE_NUMERIC
                 reason = "동점(UNDECIDED) 처리 규칙에 따라 FAIL"
@@ -503,9 +551,11 @@ def analyze_patterns(
     return results
 
 
+# "핵심 가정이 깨지지 않았는지"를 빠르게 확인하는 자체 점검 모음.
 def run_core_self_checks() -> List[SelfCheckResult]:
     results: List[SelfCheckResult] = []
 
+    # 1. 라벨 정규화 규칙이 기본 기대와 맞는지 검사.
     normalized_ok = (
         normalize_label("+") == "Cross"
         and normalize_label(" cross ") == "Cross"
@@ -524,6 +574,7 @@ def run_core_self_checks() -> List[SelfCheckResult]:
         )
     )
 
+    # 2. 패턴 키에서 size를 정확히 읽어내는지 검사.
     size_rule_ok = (
         extract_size_from_pattern_key("size_13_2") == 13
         and extract_size_from_pattern_key("size_bad") is None
@@ -541,6 +592,7 @@ def run_core_self_checks() -> List[SelfCheckResult]:
         )
     )
 
+    # 3. Cross 패턴은 Cross 필터에서 더 높은 점수가 나와야 한다.
     cross_win_ok = True
     cross_win_detail: Optional[str] = None
     for size in PERFORMANCE_SIZES:
@@ -565,6 +617,7 @@ def run_core_self_checks() -> List[SelfCheckResult]:
         )
     )
 
+    # 4. X 패턴은 X 필터에서 더 높은 점수가 나와야 한다.
     x_win_ok = True
     x_win_detail: Optional[str] = None
     for size in PERFORMANCE_SIZES:
@@ -589,6 +642,7 @@ def run_core_self_checks() -> List[SelfCheckResult]:
         )
     )
 
+    # 5. epsilon 안쪽/바깥쪽의 점수 차이를 올바르게 해석하는지 검사.
     epsilon_ok = (
         judge_scores(1.0, 1.0 + (EPSILON / 2.0)) == "UNDECIDED"
         and judge_scores(1.0, 1.0 + (EPSILON * 2.0)) == "X"
@@ -606,6 +660,7 @@ def run_core_self_checks() -> List[SelfCheckResult]:
         )
     )
 
+    # 6. 서로 다른 크기끼리는 비교를 막아야 한다.
     size_mismatch_guard_ok = False
     try:
         mac(generate_cross_matrix(3), generate_cross_matrix(5))
@@ -627,6 +682,7 @@ def run_core_self_checks() -> List[SelfCheckResult]:
     return results
 
 
+# 결과 출력 함수들.
 def print_self_check_results(results: List[SelfCheckResult]) -> None:
     for result in results:
         status = "PASS" if result.passed else "FAIL"
@@ -671,6 +727,7 @@ def summarize_results(results: List[CaseResult]) -> Tuple[int, int, int, List[Ca
     return total, passed, failed, failed_cases
 
 
+# 모드 1: 사용자가 직접 3x3 필터와 패턴을 넣어 보는 실습 모드.
 def run_user_input_mode() -> None:
     print_section("[1] 필터 입력")
     filter_a = prompt_matrix("필터 A", 3)
@@ -703,6 +760,7 @@ def run_user_input_mode() -> None:
     print_performance_table([(3, measure_mac_average_ms(pattern, filter_a), pattern.operation_count)])
 
 
+# 모드 2: data.json에 들어 있는 여러 케이스를 일괄 분석하는 모드.
 def run_json_analysis_mode() -> None:
     print_section("[1] 필터 로드")
     data, error = load_json_data(DATA_FILE)
@@ -737,6 +795,7 @@ def run_json_analysis_mode() -> None:
             print(f"- {case.case_id}: {case.reason or '원인 미상'}")
 
 
+# 프로그램 시작 시 어떤 모드를 실행할지 사용자에게 묻는다.
 def prompt_mode() -> str:
     while True:
         print("[모드 선택]")
@@ -749,6 +808,7 @@ def prompt_mode() -> str:
         print()
 
 
+# 진입점: 헤더 출력 -> 모드 선택 -> 해당 실행 함수 호출.
 def main() -> None:
     print_header()
     selected_mode = prompt_mode()
